@@ -1,13 +1,4 @@
 import importlib.metadata as metadata
-import subprocess
-
-# install dependancies
-requirements = ["pandas", "requests", "streamlit", "matplotlib"]
-command_prefix = "pip install "
-for dependancy in requirements:
-    try: metadata.version(dependancy)
-    except: result = subprocess.run(command_prefix + dependancy, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-
 import time
 import requests
 import pandas as pd
@@ -61,8 +52,10 @@ def get_open_orders(open_trades):
 
     open_trades['@Stop PnL %'] = ((open_trades['Stop Price'] - open_trades['Open Price']) / open_trades['Open Price']) * 100
     open_trades['@Current PnL %'] = ((open_trades['Current Price'] - open_trades['Open Price']) / open_trades['Open Price']) * 100
-    column_order = ['Pair', '@Stop PnL %', '@Current PnL %', 'Open Price',  'Stop Price', 'Current Price', 'Volume', 'Date Opened']
+    open_trades['% Dist from Stop'] = ((open_trades['Stop Price'] - open_trades['Current Price']) / open_trades['Current Price']) * 100
+    column_order = ['Pair', '@Stop PnL %', '@Current PnL %', '% Dist from Stop', 'Stop Price', 'Current Price', 'Volume', 'Date Opened', 'Open Price']
     open_trades = open_trades.reindex(columns=column_order)
+    open_trades.drop(columns=['Date Opened', 'Open Price'], inplace=True)
     return open_trades
 def get_trades_history_df():
     data = {
@@ -145,8 +138,8 @@ def calculate_trading_metrics(pnls):
     total_pnl = pnls.sum()
 
     # Calculate max/min pnls
-    max_profit = pnls.max()
-    max_loss = pnls.min()
+    max_profit = pnls.max() if pnls.max() > 0 else 0
+    max_loss = pnls.min() if pnls.min() < 0 else 0
 
     # Calculate average PnL per trade
     if num_trades == 0:
@@ -189,6 +182,10 @@ def calculate_trading_metrics(pnls):
 open_trades, closed_trades = match_up_open_and_closed_trades()
 open_trades = get_open_orders(open_trades)
 
+st.header("🌌 Strategy Dashboard 🌌")
+
+
+
 st.header("Open Trades")
 open_trades = open_trades.style.applymap(plus_minus_colorize, subset=['@Stop PnL %', '@Current PnL %'])
 st.dataframe(open_trades, use_container_width=True)
@@ -207,7 +204,8 @@ st.markdown("<hr>", unsafe_allow_html=True)
 
 
 st.header("Strategy Metrics")
-strategy_stats = calculate_trading_metrics(pnls)
+strategy_stats = calculate_trading_metrics(pnls).transpose()
+strategy_stats = strategy_stats.style.applymap(plus_minus_colorize, subset=["Total PnL %", "Average PnL %", "Average Winning PnL %", "Average Losing PnL %"])
 
 # Create histogram
 fig1, ax = plt.subplots()
@@ -226,12 +224,6 @@ ax.set_xlabel('Periods Open')
 ax.set_ylabel('PnL %')
 ax.set_title('Periods Open vs PnL')
 
-col1, col2 = st.columns([1, 2])
-with col1: st.table(strategy_stats)
-with col2: st.pyplot(fig1)
-with col2: st.pyplot(fig2)
-
-
-# scatter of pnl vs time open
-# view all closed trades
-
+st.table(strategy_stats)
+st.pyplot(fig1)
+st.pyplot(fig2)
