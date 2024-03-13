@@ -2,7 +2,7 @@ import importlib.metadata as metadata
 import subprocess
 
 # install dependancies
-requirements = ["pandas", "requests", "streamlit"]
+requirements = ["pandas", "requests", "streamlit", "matplotlib"]
 command_prefix = "pip install "
 for dependancy in requirements:
     try: metadata.version(dependancy)
