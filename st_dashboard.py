@@ -225,5 +225,7 @@ ax.set_ylabel('PnL %')
 ax.set_title('Periods Open vs PnL')
 
 st.table(strategy_stats)
-st.pyplot(fig1)
-st.pyplot(fig2)
+
+col1, col2 = st.columns([1,1])
+with col1: st.pyplot(fig1)
+with col2: st.pyplot(fig2)
