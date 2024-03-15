@@ -1,4 +1,3 @@
-import importlib.metadata as metadata
 import time
 import requests
 import pandas as pd
@@ -9,10 +8,10 @@ import hmac
 import base64
 import streamlit as st
 import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 
 api_key = "jU4wL3COeMEn7rnxLsNVXi8SwgZUYqr+nY4EKXGPf39jvGCT9QqLPBes"
 api_sec = "CD1XL1klofm++Xv5kqRy7YOTveBFOadhlxsumqKOQ7FCtUhlUaN9wQsK2HMBHnG3q7fMWUPun8UaqOqKbO/IWQ=="
-
 
 def get_kraken_signature(urlpath, data, secret):
     postdata = urllib.parse.urlencode(data)
@@ -29,35 +28,8 @@ def kraken_request(uri_path, data, api_key, api_sec):
     req = requests.post((api_url + uri_path), headers=headers, data=data)
     return req
 
-
-def get_open_orders(open_trades):
-    data = {
-        "nonce": str(int(1000*time.time())),
-        "trades": True
-    }
-    # Send the request and print the result
-    open_orders = kraken_request('/0/private/OpenOrders', data, api_key, api_sec).json()['result']['open']
-
-    prices_resp = requests.get('https://api.kraken.com/0/public/Ticker').json()['result']
-    for order_id, order_data in open_orders.items():
-        pair = order_data['descr']['pair']
-        stop_price = order_data['stopprice']
-        if pair in open_trades['Pair'].values:
-            open_trades.loc[open_trades['Pair'] == pair, 'Stop Price'] = stop_price
-            recent_bid = round(float(prices_resp[pair]["b"][0]), 2)
-            open_trades.loc[open_trades['Pair'] == pair, 'Current Price'] = recent_bid
-
-    open_trades['Stop Price'] = open_trades['Stop Price'].astype(float)
-    open_trades['Open Price'] = open_trades['Open Price'].astype(float)
-
-    open_trades['@Stop PnL %'] = ((open_trades['Stop Price'] - open_trades['Open Price']) / open_trades['Open Price']) * 100
-    open_trades['@Current PnL %'] = ((open_trades['Current Price'] - open_trades['Open Price']) / open_trades['Open Price']) * 100
-    open_trades['% Dist from Stop'] = ((open_trades['Stop Price'] - open_trades['Current Price']) / open_trades['Current Price']) * 100
-    column_order = ['Pair', '@Stop PnL %', '@Current PnL %', '% Dist from Stop', 'Stop Price', 'Current Price', 'Volume', 'Date Opened', 'Open Price']
-    open_trades = open_trades.reindex(columns=column_order)
-    open_trades.drop(columns=['Date Opened', 'Open Price'], inplace=True)
-    return open_trades
-def get_trades_history_df():
+def get_closed_trades_history_df():
+    """Returns df of closed trades with pnl % and market open orders without tsl closes"""
     data = {
         "nonce": str(int(1000 * time.time()))
     }
@@ -73,51 +45,63 @@ def get_trades_history_df():
 
         extracted_data.append((pair, MTS, ordertype, price, vol))
 
-    df = pd.DataFrame(extracted_data, columns=['Pair', 'MTS', 'Order Type', 'Price', 'Volume'])
+    df = pd.DataFrame(extracted_data, columns=['Symbol', 'MTS', 'Order Type', 'Price', 'Volume'])
     df['MTS'] = pd.to_datetime(df['MTS'], unit='s')
-    df = df[df["MTS"].dt.year >= 2024]
-    return df
+    df = df[df["MTS"].dt.date >= datetime(st.session_state.year, st.session_state.month, st.session_state.day).date()]
 
-
-def match_up_open_and_closed_trades():
-    # All trade opens
-    df = get_trades_history_df()
-
-    # Filter trailing stop market orders
+    # Filter trailing stop & market orders
     ts_market = df[df['Order Type'] == 'trailing stop market'].reset_index(drop=True)
-
-    # Filter market orders
     market = df[df['Order Type'] == 'market']
-    market = market.iloc[:len(market)-3].reset_index(drop=True)
 
     # Merge trailing stop market orders with market orders based on 'Pair' and 'Volume'
-    merged_df = pd.merge(ts_market, market, on=['Pair', 'Volume'], suffixes=('_tsl', '_market'))
-
-    # Add merged records to closed_trades DataFrame
-    closed_trades = merged_df.copy()
-    closed_trades['PnL %'] = ((closed_trades['Price_tsl'] - closed_trades['Price_market']) / closed_trades['Price_market']) *100
-    closed_trades = closed_trades[['Pair', 'PnL %', 'Volume', 'MTS_tsl', 'MTS_market', 'Price_market', 'Price_tsl']]
-    closed_trades.columns = ['Symbol', 'PnL %', 'Volume', 'Close Date', 'Open Date', 'Open Price', 'Close Price',]
+    closed_trades = pd.merge(ts_market, market, on=['Symbol', 'Volume'], suffixes=('_tsl', '_market'))
+    closed_trades['PnL %'] = ((closed_trades['Price_tsl'] - closed_trades['Price_market']) / closed_trades['Price_market']) * 100
+    closed_trades = closed_trades[['Symbol', 'PnL %', 'Volume', 'MTS_tsl', 'MTS_market', 'Price_market', 'Price_tsl']]
+    closed_trades.columns = ['Symbol', 'PnL %', 'Volume', 'Close Date', 'Open Date', 'Open Price', 'Close Price', ]
     closed_trades['Close Date'] = pd.to_datetime(closed_trades['Close Date'])
     closed_trades['Open Date'] = pd.to_datetime(closed_trades['Open Date'])
 
     # Calculate the number of days open
     closed_trades['Periods Open'] = (closed_trades['Close Date'] - closed_trades['Open Date']).dt.days
-    closed_trades.drop(columns=['Open Date'], inplace=True)
-    closed_trades = closed_trades[['Symbol', 'PnL %', 'Volume', 'Periods Open', 'Close Date', 'Open Price', 'Close Price']]
+    closed_trades = closed_trades[['Symbol', 'PnL %', 'Periods Open', 'Close Date', 'Close Price']]
     closed_trades['Close Date'] = closed_trades['Close Date'].dt.date
-    closed_trades['PnL %'] = closed_trades['PnL %'].round(2)
+    closed_trades['PnL %'] = closed_trades['PnL %'].round(4)
 
     # Filter out records without a corresponding trailing stop market order
-    open_trades = market[~market.set_index(['Pair', 'Volume']).index.isin(ts_market.set_index(['Pair', 'Volume']).index)].reset_index(drop=True)
-    open_trades.rename(columns={'Price': 'Open Price', 'MTS': 'Date Opened'}, inplace=True)
-    open_trades['Date Opened'] = open_trades['Date Opened'].dt.date
-    open_trades.drop(columns=['Order Type'], inplace=True)
-    return open_trades, closed_trades
+    market_opens = market[~market.set_index(['Symbol', 'Volume']).index.isin(ts_market.set_index(['Symbol', 'Volume']).index)].reset_index(drop=True)
+    market_opens.rename(columns={'Symbol': 'Symbol', 'Price': 'Open Price'}, inplace=True)
+    market_opens.drop(columns=['Order Type', 'MTS', 'Volume'], inplace=True)
+    # get open TSL orders & prices and merge to open_trades df
+    # drop any rows which do not merge on pair, volume.
+    return market_opens, closed_trades
 
-def plus_minus_colorize(val):
-    color = 'green' if val > 0 else 'red'
-    return f'color: {color}'
+def get_open_orders(market_opens):
+    data = {
+        "nonce": str(int(1000*time.time())),
+        "trades": True
+    }
+    prices_resp = requests.get('https://api.kraken.com/0/public/Ticker').json()['result']
+    try:
+        open_orders = kraken_request('/0/private/OpenOrders', data, api_key, api_sec).json()['result']['open']
+        for order_id, order_data in open_orders.items():
+            pair = order_data['descr']['pair']
+            stop_price = order_data['stopprice']
+            if pair in market_opens['Symbol'].values:
+                market_opens.loc[market_opens['Symbol'] == pair, 'Stop Price'] = stop_price
+                recent_bid = round(float(prices_resp[pair]["c"][0]), 2)
+                market_opens.loc[market_opens['Symbol'] == pair, 'Current Price'] = recent_bid
+
+        for col in market_opens.columns:
+            if col != 'Symbol': market_opens[col] = market_opens[col].astype(float)
+        market_opens['@Stop PnL %'] = ((market_opens['Stop Price'] - market_opens['Open Price']) / market_opens['Open Price']) * 100
+        market_opens['% Dist from Stop'] = ((market_opens['Stop Price'] - market_opens['Current Price']) / market_opens['Current Price']) * 100
+        market_opens['@Current PnL %'] = ((market_opens['Current Price'] - market_opens['Open Price']) / market_opens['Open Price']) * 100
+
+        market_opens = market_opens[['Symbol', '@Stop PnL %', '@Current PnL %', '% Dist from Stop']]
+    except:
+        market_opens = pd.DataFrame(columns=['Symbol', '@Stop PnL %', '% Dist from Stop', '@Current PnL %'])
+    return market_opens
+
 
 
 def calculate_trading_metrics(pnls):
@@ -176,56 +160,41 @@ def calculate_trading_metrics(pnls):
     for key in metrics: metrics[key] = round(metrics[key], 2)
     metrics = pd.DataFrame.from_dict(metrics, orient='index', columns=['Value'])
     return metrics
+def plot_pnls_charts(pnls):
+    # Create histogram
+    fig1, ax = plt.subplots()
+    ax.hist(pnls, bins=10, color='skyblue', edgecolor='black')
+    ax.set_xlabel('PnL %')
+    ax.set_ylabel('Frequency')
+    ax.set_title('Distribution of Closed Trade PnLs')
+    plt.axvline(x=0, color='k', linestyle='--')
+
+    return fig1
 
 
-# prep datasets
-open_trades, closed_trades = match_up_open_and_closed_trades()
-open_trades = get_open_orders(open_trades)
 
 st.header("🌌 Strategy Dashboard 🌌")
+col1, col2, col3 = st.columns([1,1,1])
+with col1: st.number_input("Day Start", value=15, min_value=1, key='day')
+with col2: st.number_input("Month Start", value=3, min_value=1, max_value=12, key='month')
+with col3: st.number_input("Year Start", value=2024, min_value=1, key='year')
+st.markdown("<hr>", unsafe_allow_html=True)
+
+market_opens, closed_trades = get_closed_trades_history_df()
 
 
+def plus_minus_colorize(val):
+    color = 'green' if val > 0 else 'red'
+    return f'color: {color}'
 
 st.header("Open Trades")
+open_trades = get_open_orders(market_opens)
+open_symbols = open_trades['Symbol'].values
 open_trades = open_trades.style.applymap(plus_minus_colorize, subset=['@Stop PnL %', '@Current PnL %'])
-st.dataframe(open_trades, use_container_width=True)
-st.markdown("<hr>", unsafe_allow_html=True)
-
+st.dataframe(open_trades, use_container_width=True, hide_index=True)
 
 st.header("Closed Trades")
-
-pnls = closed_trades['PnL %']
-periods_open = closed_trades['Periods Open']
+fig1 = plot_pnls_charts(closed_trades['PnL %'])
 closed_trades = closed_trades.style.applymap(plus_minus_colorize, subset=['PnL %'])
-st.dataframe(closed_trades, use_container_width=True)
-
-
-st.markdown("<hr>", unsafe_allow_html=True)
-
-
-st.header("Strategy Metrics")
-strategy_stats = calculate_trading_metrics(pnls).transpose()
-strategy_stats = strategy_stats.style.applymap(plus_minus_colorize, subset=["Total PnL %", "Average PnL %", "Average Winning PnL %", "Average Losing PnL %"])
-
-# Create histogram
-fig1, ax = plt.subplots()
-ax.hist(pnls, bins=10, color='skyblue', edgecolor='black')
-ax.set_xlabel('PnL %')
-ax.set_ylabel('Frequency')
-ax.set_title('Distribution of Closed Trade PnLs')
-plt.axvline(x=0, color='k', linestyle='--')
-
-
-# Create scatter plot
-fig2, ax = plt.subplots()
-colors = ['red' if pnl < 0 else 'green' for pnl in pnls]
-ax.scatter(periods_open, pnls, c=colors, alpha=0.5)
-ax.set_xlabel('Periods Open')
-ax.set_ylabel('PnL %')
-ax.set_title('Periods Open vs PnL')
-
-st.table(strategy_stats)
-
-col1, col2 = st.columns([1,1])
-with col1: st.pyplot(fig1)
-with col2: st.pyplot(fig2)
+st.dataframe(closed_trades, use_container_width=True, hide_index=True)
+st.pyplot(fig1)
