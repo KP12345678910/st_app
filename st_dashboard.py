@@ -71,8 +71,6 @@ def get_closed_trades_history_df():
     market_opens = market[~market.set_index(['Symbol', 'Volume']).index.isin(ts_market.set_index(['Symbol', 'Volume']).index)].reset_index(drop=True)
     market_opens.rename(columns={'Symbol': 'Symbol', 'Price': 'Open Price'}, inplace=True)
     market_opens.drop(columns=['Order Type', 'MTS', 'Volume'], inplace=True)
-    # get open TSL orders & prices and merge to open_trades df
-    # drop any rows which do not merge on pair, volume.
     return market_opens, closed_trades
 
 def get_open_orders(market_opens):
@@ -100,7 +98,7 @@ def get_open_orders(market_opens):
         market_opens = market_opens[['Symbol', '@Stop PnL %', '@Current PnL %', '% Dist from Stop']]
     except:
         market_opens = pd.DataFrame(columns=['Symbol', '@Stop PnL %', '% Dist from Stop', '@Current PnL %'])
-    return market_opens
+    return market_opens.dropna()
 
 
 
